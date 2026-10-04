@@ -22,7 +22,7 @@ export default function ThreatDashboard() {
   const [loading, setLoading] = useState(false);
   const [simulating, setSimulating] = useState(false);
 
-  const BACKEND_URL = "http://127.0.0.1:8000";
+  const BACKEND_URL = "https://ai-threat-platform.onrender.com";
 
   const fetchDashboardData = async () => {
     try {
