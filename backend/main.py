@@ -35,9 +35,10 @@ else:
     model.fit(X_train)
     joblib.dump(model, MODEL_PATH)
 
-# In-memory storage for detected alerts during runtime
+# In-memory storage for detected alerts, metrics, and blocked IPs during runtime
 active_alerts = []
 request_counter = 0
+blocked_ips = set()
 
 # Define the structure of an incoming log request using Pydantic
 class LogPayload(BaseModel):
@@ -54,6 +55,14 @@ def read_root():
 @app.post("/api/ingest")
 def ingest_log(log: LogPayload):
     global request_counter
+
+    # Check if IP address is blacklisted / blocked
+    if log.ip_address in blocked_ips:
+        raise HTTPException(
+            status_code=403, 
+            detail=f"Access denied: IP {log.ip_address} has been isolated and blocked."
+        )
+
     request_counter += 1
 
     if model is None:
@@ -92,8 +101,37 @@ def ingest_log(log: LogPayload):
 
 @app.get("/api/alerts")
 def get_alerts():
+    total_scanned = request_counter + 5000  # Including synthetic baseline
+    total_threats = len(active_alerts)
+    
+    # Calculate anomaly ratio percentage safely
+    anomaly_ratio = round((total_threats / total_scanned) * 100, 2) if total_scanned > 0 else 0.0
+
+    # Calculate severity counts
+    high_severity_count = sum(1 for a in active_alerts if a["severity"] == "HIGH")
+    medium_severity_count = sum(1 for a in active_alerts if a["severity"] == "MEDIUM")
+
+    # Aggregate top targeted endpoints
+    endpoint_counts = {}
+    for alert in active_alerts:
+        ep = alert["endpoint"]
+        endpoint_counts[ep] = endpoint_counts.get(ep, 0) + 1
+
     return {
-        "total_requests_scanned": request_counter + 5000, # Including synthetic baseline
-        "total_threats_detected": len(active_alerts),
+        "total_requests_scanned": total_scanned,
+        "total_threats_detected": total_threats,
+        "anomaly_ratio": anomaly_ratio,
+        "high_severity_count": high_severity_count,
+        "medium_severity_count": medium_severity_count,
+        "top_endpoints": endpoint_counts,
+        "blocked_ips_count": len(blocked_ips),
         "alerts": active_alerts
+    }
+
+@app.post("/api/block-ip")
+def block_ip(ip_address: str):
+    blocked_ips.add(ip_address)
+    return {
+        "status": "success",
+        "message": f"IP address {ip_address} has been successfully isolated and blocked."
     }
