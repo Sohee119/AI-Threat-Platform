@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Shield, AlertTriangle, Activity, Server, RefreshCw, CheckCircle2 } from "lucide-react";
+import { Shield, AlertTriangle, Activity, Server, RefreshCw, CheckCircle2, Lock, Ban } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 interface Alert {
@@ -18,9 +18,14 @@ interface Alert {
 export default function ThreatDashboard() {
   const [totalScanned, setTotalScanned] = useState(5000);
   const [totalThreats, setTotalThreats] = useState(0);
+  const [anomalyRatio, setAnomalyRatio] = useState(0);
+  const [highSeverity, setHighSeverity] = useState(0);
+  const [mediumSeverity, setMediumSeverity] = useState(0);
+  const [blockedIPsCount, setBlockedIPsCount] = useState(0);
+  const [topEndpoints, setTopEndpoints] = useState<Record<string, number>>({});
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [loading, setLoading] = useState(false);
   const [simulating, setSimulating] = useState(false);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   const BACKEND_URL = "https://ai-threat-platform.onrender.com";
 
@@ -30,6 +35,11 @@ export default function ThreatDashboard() {
       const data = await res.json();
       setTotalScanned(data.total_requests_scanned);
       setTotalThreats(data.total_threats_detected);
+      setAnomalyRatio(data.anomaly_ratio || 0);
+      setHighSeverity(data.high_severity_count || 0);
+      setMediumSeverity(data.medium_severity_count || 0);
+      setBlockedIPsCount(data.blocked_ips_count || 0);
+      setTopEndpoints(data.top_endpoints || {});
       setAlerts(data.alerts);
     } catch (err) {
       console.error("Failed to connect to backend API:", err);
@@ -45,6 +55,7 @@ export default function ThreatDashboard() {
   // Simulate incoming test log (Normal or Threat)
   const simulateLog = async (isThreat: boolean) => {
     setSimulating(true);
+    setActionMessage(null);
     const mockPayload = {
       ip_address: isThreat ? "203.0.113.42" : "192.168.1.55",
       endpoint: isThreat ? "/api/admin/dump" : "/api/profile",
@@ -54,11 +65,16 @@ export default function ThreatDashboard() {
     };
 
     try {
-      await fetch(`${BACKEND_URL}/api/ingest`, {
+      const res = await fetch(`${BACKEND_URL}/api/ingest`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(mockPayload),
       });
+      
+      if (res.status === 403) {
+        setActionMessage("Warning: Request blocked because the source IP is isolated.");
+      }
+      
       await fetchDashboardData();
     } catch (err) {
       console.error("Error sending simulation log:", err);
@@ -66,11 +82,31 @@ export default function ThreatDashboard() {
     setSimulating(false);
   };
 
-  // Chart data formatting
+  // Isolate / Block an IP address
+  const handleBlockIp = async (ipAddress: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/block-ip?ip_address=${encodeURIComponent(ipAddress)}`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      setActionMessage(data.message);
+      await fetchDashboardData();
+    } catch (err) {
+      console.error("Failed to block IP:", err);
+    }
+  };
+
+  // Chart data formatting for traffic distribution
   const chartData = [
     { name: "Normal Traffic", count: totalScanned - totalThreats },
     { name: "Flagged Threats", count: totalThreats },
   ];
+
+  // Endpoint chart data format
+  const endpointChartData = Object.keys(topEndpoints).map((ep) => ({
+    endpoint: ep,
+    count: topEndpoints[ep],
+  }));
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 p-6 md:p-10 font-sans">
@@ -81,9 +117,9 @@ export default function ThreatDashboard() {
             <Shield className="w-8 h-8 text-cyan-400" />
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight">AI Cloud Threat Intelligence</h1>
           </div>
-          <p className="text-slate-400 text-sm mt-1">Real-time Isolation Forest Anomaly Detection Engine</p>
+          <p className="text-slate-400 text-sm mt-1">Real-time Isolation Forest Anomaly Detection Engine & SOC</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-wrap">
           <button
             onClick={() => simulateLog(false)}
             disabled={simulating}
@@ -101,38 +137,50 @@ export default function ThreatDashboard() {
         </div>
       </div>
 
+      {actionMessage && (
+        <div className="mb-6 p-4 bg-amber-500/10 border border-amber-500/30 text-amber-300 rounded-xl text-sm flex items-center justify-between">
+          <span>{actionMessage}</span>
+          <button onClick={() => setActionMessage(null)} className="text-xs text-amber-400 hover:underline">Dismiss</button>
+        </div>
+      )}
+
       {/* Metrics Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-md flex items-center justify-between">
-          <div>
-            <p className="text-slate-400 text-sm font-medium">Total Requests Scanned</p>
-            <h3 className="text-3xl font-bold text-white mt-1">{totalScanned.toLocaleString()}</h3>
-          </div>
-          <Server className="w-10 h-10 text-cyan-500 opacity-80" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl shadow-md">
+          <p className="text-slate-400 text-xs font-medium uppercase tracking-wider">Requests Scanned</p>
+          <h3 className="text-2xl font-bold text-white mt-1">{totalScanned.toLocaleString()}</h3>
+          <span className="text-xs text-cyan-400 mt-2 block">Live Telemetry Active</span>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-md flex items-center justify-between">
-          <div>
-            <p className="text-slate-400 text-sm font-medium">Active Security Threats</p>
-            <h3 className="text-3xl font-bold text-rose-500 mt-1">{totalThreats}</h3>
-          </div>
-          <AlertTriangle className="w-10 h-10 text-rose-500 opacity-80" />
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl shadow-md">
+          <p className="text-slate-400 text-xs font-medium uppercase tracking-wider">Anomaly Ratio</p>
+          <h3 className="text-2xl font-bold text-cyan-400 mt-1">{anomalyRatio}%</h3>
+          <span className="text-xs text-slate-500 mt-2 block">Outlier percentage</span>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-md flex items-center justify-between">
-          <div>
-            <p className="text-slate-400 text-sm font-medium">System Status</p>
-            <h3 className="text-xl font-bold text-emerald-400 mt-1 flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span> Protected
-            </h3>
-          </div>
-          <Activity className="w-10 h-10 text-emerald-500 opacity-80" />
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl shadow-md">
+          <p className="text-slate-400 text-xs font-medium uppercase tracking-wider">High Severity</p>
+          <h3 className="text-2xl font-bold text-rose-500 mt-1">{highSeverity}</h3>
+          <span className="text-xs text-rose-400/80 mt-2 block">Large payload attacks</span>
+        </div>
+
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl shadow-md">
+          <p className="text-slate-400 text-xs font-medium uppercase tracking-wider">Medium Severity</p>
+          <h3 className="text-2xl font-bold text-amber-400 mt-1">{mediumSeverity}</h3>
+          <span className="text-xs text-amber-400/80 mt-2 block">Suspicious headers/latencies</span>
+        </div>
+
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl shadow-md">
+          <p className="text-slate-400 text-xs font-medium uppercase tracking-wider">Isolated IPs</p>
+          <h3 className="text-2xl font-bold text-purple-400 mt-1">{blockedIPsCount}</h3>
+          <span className="text-xs text-purple-400/80 mt-2 block">Blocked at firewall</span>
         </div>
       </div>
 
-      {/* Chart & Analytics Section */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
-        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-md">
+      {/* Charts Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+        {/* Traffic vs Threat Chart */}
+        <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-md">
           <h2 className="text-lg font-semibold mb-4 text-slate-200">Traffic vs Threat Distribution</h2>
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -147,17 +195,25 @@ export default function ThreatDashboard() {
           </div>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-md flex flex-col justify-between">
-          <div>
-            <h2 className="text-lg font-semibold mb-2 text-slate-200">AI Engine Status</h2>
-            <p className="text-sm text-slate-400 mb-4">
-              Running scikit-learn Isolation Forest algorithm. Models analyze incoming telemetry vectors for outliers based on payload size, latency, and status codes.
-            </p>
-          </div>
-          <div className="bg-slate-950 p-4 rounded-lg border border-slate-800 text-xs font-mono text-cyan-400">
-            [INFO] Model loaded: anomaly_detector.pkl <br />
-            [INFO] Contamination rate: 2% <br />
-            [STATUS] Real-time inference active
+        {/* Top Targeted Endpoints Chart */}
+        <div className="bg-slate-900 border border-slate-800 p-6 rounded-xl shadow-md">
+          <h2 className="text-lg font-semibold mb-4 text-slate-200">Top Targeted Endpoints</h2>
+          <div className="h-64 w-full">
+            {endpointChartData.length === 0 ? (
+              <div className="h-full flex items-center justify-center text-slate-500 text-sm">
+                No endpoint attack targets recorded yet.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={endpointChartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                  <XAxis dataKey="endpoint" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", color: "#fff" }} />
+                  <Bar dataKey="count" fill="#f43f5e" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
       </div>
@@ -165,8 +221,11 @@ export default function ThreatDashboard() {
       {/* Live Security Feed Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl shadow-md overflow-hidden">
         <div className="p-6 border-b border-slate-800 flex justify-between items-center">
-          <h2 className="text-lg font-semibold text-slate-200">Live Security Threat Feed</h2>
-          <button onClick={fetchDashboardData} className="text-slate-400 hover:text-white transition flex items-center gap-1 text-sm">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-200">Live Security Threat Feed</h2>
+            <p className="text-xs text-slate-400 mt-0.5">Real-time isolation forest alert stream with active IP mitigation options</p>
+          </div>
+          <button onClick={fetchDashboardData} className="text-slate-400 hover:text-white transition flex items-center gap-1 text-sm bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
             <RefreshCw className="w-4 h-4" /> Refresh
           </button>
         </div>
@@ -178,15 +237,16 @@ export default function ThreatDashboard() {
                 <th className="p-4">IP Address</th>
                 <th className="p-4">Target Endpoint</th>
                 <th className="p-4">Status</th>
-                <th className="p-4">Payload (Bytes)</th>
-                <th className="p-4">Duration (ms)</th>
+                <th className="p-4">Payload (B)</th>
+                <th className="p-4">Duration</th>
+                <th className="p-4 text-right">Mitigation</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
               {alerts.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="p-6 text-center text-slate-500">
-                    No threats detected yet. Click "Simulate Attack Log" to test the AI model!
+                  <td colSpan={7} className="p-8 text-center text-slate-500">
+                    No threats detected yet. Click <span className="text-rose-400 font-semibold">"Simulate Attack Log"</span> to test the anomaly detector!
                   </td>
                 </tr>
               ) : (
@@ -201,7 +261,16 @@ export default function ThreatDashboard() {
                     <td className="p-4 text-slate-300">{alert.endpoint}</td>
                     <td className="p-4 font-mono text-slate-400">{alert.status_code}</td>
                     <td className="p-4 font-mono text-slate-300">{alert.payload_size}</td>
-                    <td className="p-4 font-mono text-slate-300">{alert.duration_ms}</td>
+                    <td className="p-4 font-mono text-slate-300">{alert.duration_ms}ms</td>
+                    <td className="p-4 text-right">
+                      <button
+                        onClick={() => handleBlockIp(alert.ip_address)}
+                        className="inline-flex items-center gap-1.5 bg-purple-600/20 hover:bg-purple-600/40 text-purple-300 border border-purple-500/40 px-3 py-1 rounded-lg text-xs font-medium transition"
+                        title="Isolate and block this IP address"
+                      >
+                        <Ban className="w-3.5 h-3.5" /> Isolate IP
+                      </button>
+                    </td>
                   </tr>
                 ))
               )}
